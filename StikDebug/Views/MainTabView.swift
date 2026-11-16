@@ -76,6 +76,7 @@ struct MainTabView: View {
             }
             .onOpenURL { url in
                 handleURL(url)
+                ExternalURLRouter.shared.handle(url)
             }
             .confirmationDialog(
                 pendingLocationAction?.title ?? "External Location Request",

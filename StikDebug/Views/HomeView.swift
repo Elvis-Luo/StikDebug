@@ -56,7 +56,12 @@ struct HomeView: View {
         .onAppear(perform: handleAppear)
         .onReceive(NotificationCenter.default.publisher(for: .intentJSScriptReady), perform: handleScriptReadyNotification)
         .onOpenURL { url in
-            handleExternalURL(url)
+            ExternalURLRouter.shared.handle(url)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: ExternalURLRouter.notification)) { notification in
+            if let url = notification.object as? URL {
+                handleExternalURL(url)
+            }
         }
         .confirmationDialog(
             pendingExternalURLAction?.title ?? "External Request",
@@ -134,6 +139,9 @@ struct HomeView: View {
             PIDJITConfigurationView { pid, scriptURL in
                 enableJITByPID(pid, scriptURL: scriptURL)
             }
+            .onOpenURL { url in
+                ExternalURLRouter.shared.handle(url)
+            }
         }
         .sheet(item: $scriptRunModel) { model in
             NavigationStack {
@@ -144,6 +152,9 @@ struct HomeView: View {
                         }
                     }
                     .navigationBarTitleDisplayMode(.inline)
+            }
+            .onOpenURL { url in
+                ExternalURLRouter.shared.handle(url)
             }
         }
     }
