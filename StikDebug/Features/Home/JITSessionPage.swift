@@ -116,6 +116,8 @@ enum JITSessionText {
             return "Finishing...".localized
         case .appQuit:
             return "The JIT session has ended.".localized
+        case .scriptError:
+            return "The script stopped with an error. View Log has the details.".localized
         case .starting, .enabled, .failed:
             return nil
         }
@@ -211,13 +213,15 @@ private struct JITSessionStatusView: View {
             return JITSessionText.appQuitTitle(appName: session.appName)
         case .failed:
             return String(format: "JIT failed for %@".localized, session.appName)
+        case .scriptError:
+            return "Script Error".localized
         }
     }
 
     private func color(for phase: JITSessionWatch.Phase) -> Color {
         switch phase {
         case .waiting, .finishing, .enabled: return .green
-        case .failed: return .red
+        case .failed, .scriptError: return .red
         case .starting, .appQuit: return .primary
         }
     }
@@ -248,7 +252,7 @@ private struct JITSessionCapsuleContent: View {
     var body: some View {
         let phase = model.watch.phase(at: Date())
         switch phase {
-        case .starting, .failed:
+        case .starting, .failed, .scriptError:
             JITSessionStartingCapsule(appName: session.appName)
         case .waiting, .finishing, .enabled, .appQuit:
             let title = phase == .appQuit

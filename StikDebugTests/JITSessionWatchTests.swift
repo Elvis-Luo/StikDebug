@@ -68,6 +68,33 @@ struct JITSessionWatchTests {
         #expect(watch.closeDelay(logOpen: false) == nil)
     }
 
+    @Test func scriptErrorKeepsThePageOpen() {
+        var watch = JITSessionWatch()
+        watch.scriptFailed()
+        #expect(watch.phase(at: at(1)) == .scriptError)
+        // The debug session itself still reports success.
+        watch.finish(success: true)
+        #expect(watch.phase(at: at(2)) == .scriptError)
+        #expect(watch.closeDelay(logOpen: false) == nil)
+
+        var failed = JITSessionWatch()
+        failed.scriptFailed()
+        failed.finish(success: false)
+        #expect(failed.phase(at: at(1)) == .failed)
+    }
+
+    @Test func aScriptThatKeepsContinuingStaysWaiting() {
+        var watch = JITSessionWatch()
+        watch.continueStarted(at: at(0))
+        #expect(watch.phase(at: at(5)) == .waiting)
+        watch.continueEnded(response: "T05thread:1;", at: at(30))
+        #expect(watch.phase(at: at(30)) == .finishing)
+        // The next breakpoint is handled and the script continues again at once.
+        watch.continueStarted(at: at(30.1))
+        #expect(watch.phase(at: at(30.2)) == .waiting)
+        #expect(watch.phase(at: at(40)) == .waiting)
+    }
+
     @Test func onlyContinueCommandsAreWatched() {
         for command in ["c", "C05", "c1234abcd", "vCont;c", "vCont;c:56fd73", "vCont;C05:56fd73"] {
             #expect(JITSessionWatch.isContinue(command), "\(command)")

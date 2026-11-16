@@ -108,6 +108,11 @@ final class RunJSViewModel: ObservableObject, Identifiable, @unchecked Sendable 
         context?.setObject(logFunction, forKeyedSubscript: "log" as NSString)
         
         context?.evaluateScript(scriptContent)
+        if context?.exception != nil {
+            // Noted before the semaphore lets the debug session finish, so the session page
+            // sees the error before it learns how the session ended.
+            markScriptFailed()
+        }
         if let semaphore {
             semaphore.signal()
         }
@@ -168,6 +173,13 @@ final class RunJSViewModel: ObservableObject, Identifiable, @unchecked Sendable 
     /// The debug session ended (main queue), for the session page.
     func finishWatch(success: Bool) {
         watch.finish(success: success)
+    }
+
+    /// The script threw or could not run. Only noted for the session page.
+    func markScriptFailed() {
+        DispatchQueue.main.async {
+            self.watch.scriptFailed()
+        }
     }
 
     private func appendLog(_ message: String) {

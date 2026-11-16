@@ -24,11 +24,13 @@ struct JITSessionWatch: Equatable {
         case enabled    // the debug session completed
         case appQuit    // the app exited (W or X answer to a continue)
         case failed     // the debug session failed
+        case scriptError // the script stopped with an exception
     }
 
     private(set) var continueSince: Date?
     private(set) var reachedWaiting = false
     private(set) var targetExited = false
+    private(set) var scriptError = false
     /// How the debug session ended; nil while it runs.
     private(set) var finished: Bool?
 
@@ -61,19 +63,29 @@ struct JITSessionWatch: Equatable {
         finished = success
     }
 
+    /// The script threw. JIT may not be on, so the page shows the error and stays open.
+    mutating func scriptFailed() {
+        scriptError = true
+    }
+
     func phase(at now: Date) -> Phase {
         if finished == false { return .failed }
+        if scriptError { return .scriptError }
         if targetExited { return .appQuit }
         if finished == true { return .enabled }
-        if let since = continueSince, now.timeIntervalSince(since) >= Self.waitingDelay { return .waiting }
+        if let since = continueSince {
+            // Once the script has waited for the app, a later continue (a script that keeps
+            // continuing after each breakpoint) means it waits again.
+            if reachedWaiting || now.timeIntervalSince(since) >= Self.waitingDelay { return .waiting }
+        }
         if reachedWaiting { return .finishing }
         return .starting
     }
 
     /// When the page closes by itself after the session ended. nil keeps it open: a failed
-    /// session (its alert shows as before), or while the log is open.
+    /// session (its alert shows as before), a script error, or while the log is open.
     func closeDelay(logOpen: Bool) -> TimeInterval? {
-        guard finished == true, !logOpen else { return nil }
+        guard finished == true, !scriptError, !logOpen else { return nil }
         return targetExited ? 0 : Self.enabledShownFor
     }
 }

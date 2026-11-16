@@ -366,6 +366,7 @@ struct HomeView: View {
             do {
                 try model.runScript(data: script, name: name)
             } catch {
+                model.markScriptFailed()
                 semaphore.signal()
                 DispatchQueue.main.async {
                     showAlert(title: "Error Occurred While Executing Script.".localized, message: error.localizedDescription, showOk: true)

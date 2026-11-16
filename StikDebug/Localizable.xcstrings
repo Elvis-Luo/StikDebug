@@ -5648,6 +5648,105 @@
           }
         }
       }
+    },
+    "JIT Enabled" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "JIT Enabled"
+          }
+        }
+      }
+    },
+    "%@ Quit" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ Quit"
+          }
+        }
+      }
+    },
+    "%@ quit. The JIT session has ended." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ quit. The JIT session has ended."
+          }
+        }
+      }
+    },
+    "The script is waiting for %@. This finishes by itself." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The script is waiting for %@. This finishes by itself."
+          }
+        }
+      }
+    },
+    "Finishing..." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Finishing..."
+          }
+        }
+      }
+    },
+    "The JIT session has ended." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The JIT session has ended."
+          }
+        }
+      }
+    },
+    "View Log" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "View Log"
+          }
+        }
+      }
+    },
+    "Script Error" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Script Error"
+          }
+        }
+      }
+    },
+    "The script stopped with an error. View Log has the details." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The script stopped with an error. View Log has the details."
+          }
+        }
+      }
     }
   },
   "version": "1.3"
