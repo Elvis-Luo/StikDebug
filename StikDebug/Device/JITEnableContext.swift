@@ -52,8 +52,47 @@ final class RemotePairingPortResolver {
         }
 
         let result = discover(targetIPAddress: targetIPAddress, timeout: timeout)
-        record(targetIPAddress: targetIPAddress, port: result.port, source: result.source)
-        return result.port
+        var port = result.port
+        var source = result.source
+        // The device picks its RemotePairing port at boot. Bonjour sometimes finds nothing within
+        // the timeout, and the fallback is then the wrong port, so keep the last port Bonjour found
+        // during this boot and use it instead.
+        if targetIPAddress == DeviceConnectionContext.defaultTargetIPAddress {
+            if source == "Bonjour" {
+                rememberPort(port)
+            } else if let remembered = rememberedPort() {
+                port = remembered
+                source = "Bonjour, earlier this boot"
+            }
+        }
+        record(targetIPAddress: targetIPAddress, port: port, source: source)
+        return port
+    }
+
+    private static let rememberedPortKey = "RemotePairingRememberedPort"
+    private static let rememberedPortBootKey = "RemotePairingRememberedPortBoot"
+
+    private static func bootTime() -> Int {
+        var boot = timeval()
+        var size = MemoryLayout<timeval>.size
+        var mib: [Int32] = [CTL_KERN, KERN_BOOTTIME]
+        guard sysctl(&mib, 2, &boot, &size, nil, 0) == 0 else { return 0 }
+        return Int(boot.tv_sec)
+    }
+
+    private static func rememberPort(_ port: UInt16) {
+        UserDefaults.standard.set(Int(port), forKey: rememberedPortKey)
+        UserDefaults.standard.set(bootTime(), forKey: rememberedPortBootKey)
+    }
+
+    private static func rememberedPort() -> UInt16? {
+        let defaults = UserDefaults.standard
+        let boot = bootTime()
+        guard boot != 0, defaults.integer(forKey: rememberedPortBootKey) == boot,
+              let port = UInt16(exactly: defaults.integer(forKey: rememberedPortKey)), port != 0 else {
+            return nil
+        }
+        return port
     }
 
     static func discover(targetIPAddress: String = DeviceConnectionContext.targetIPAddress, timeout: TimeInterval = 5) -> (port: UInt16, source: String) {
