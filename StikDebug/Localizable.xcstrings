@@ -5648,6 +5648,94 @@
           }
         }
       }
+    },
+    "On cellular, StikDebug connects in the few seconds after Airplane Mode turns off. In the Shortcuts app, create a shortcut named “%@” that turns Airplane Mode on, waits 1 second and turns it off, run it once and allow it. StikDebug continues without it this time.\n(%@)" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "On cellular, StikDebug connects in the few seconds after Airplane Mode turns off. In the Shortcuts app, create a shortcut named “%@” that turns Airplane Mode on, waits 1 second and turns it off, run it once and allow it. StikDebug continues without it this time.\n(%@)"
+          }
+        }
+      }
+    },
+    "Airplane Mode Shortcut Needed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Airplane Mode Shortcut Needed"
+          }
+        }
+      }
+    },
+    "StikDebug could not connect in the seconds after Airplane Mode turned off, so JIT was not enabled. Try again, or join any Wi-Fi network first.\n(%@)" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "StikDebug could not connect in the seconds after Airplane Mode turned off, so JIT was not enabled. Try again, or join any Wi-Fi network first.\n(%@)"
+          }
+        }
+      }
+    },
+    "Couldn't Connect on Cellular" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn't Connect on Cellular"
+          }
+        }
+      }
+    },
+    "JIT on Cellular" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "JIT on Cellular"
+          }
+        }
+      }
+    },
+    "For JIT requests from other apps without Wi-Fi: runs an Airplane Mode shortcut and connects in the seconds after Airplane Mode turns off." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "For JIT requests from other apps without Wi-Fi: runs an Airplane Mode shortcut and connects in the seconds after Airplane Mode turns off."
+          }
+        }
+      }
+    },
+    "Cellular" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cellular"
+          }
+        }
+      }
+    },
+    "In the Shortcuts app, create a shortcut with this name that turns Airplane Mode on, waits 1 second and turns it off, and run it once to allow it. Keep LocalDevVPN connected." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "In the Shortcuts app, create a shortcut with this name that turns Airplane Mode on, waits 1 second and turns it off, and run it once to allow it. Keep LocalDevVPN connected."
+          }
+        }
+      }
     }
   },
   "version": "1.3"

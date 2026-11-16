@@ -378,6 +378,11 @@ struct HomeView: View {
 
     /// This request's Airplane Mode window, then the request goes on. Windows run one at a time.
     private func runCellularWindow(for config: JITEnableConfiguration) {
+        // The window can take up to about 45 seconds: show the request as starting meanwhile.
+        let targetName = config.bundleID ?? config.pid.map { String(format: "process %d".localized, $0) } ?? "app".localized
+        withAnimation {
+            debugFeedback = DebugFeedback(message: String(format: "Starting JIT for %@".localized, targetName), isError: false, isWorking: true)
+        }
         CellularWindow.shared.run(request: config.requestID) { outcome in
             switch outcome {
             case .notNeeded, .opened:
@@ -388,6 +393,9 @@ struct HomeView: View {
                 CellularWindow.shared.showMissingShortcutHint(detail: detail) {}
             case .failed(let detail):
                 // No alert for a request a newer one replaced, or whose app already got its debugger.
+                withAnimation {
+                    debugFeedback = nil
+                }
                 if let reason = CellularWindow.shared.registry.alertSuppression(for: config.requestID) {
                     CellularWindow.log("[\(config.requestID.prefix(8))] window failed; no alert (\(reason))")
                     CellularWindow.shared.registry.finish(config.requestID, success: false, now: Date())

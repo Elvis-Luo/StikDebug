@@ -346,6 +346,38 @@ final class JITEnableContext {
     /// When the main tunnel came from a cellular window. startTunnel keeps such a tunnel instead of
     /// connecting anew, which on cellular would be refused (MainTunnelPolicy).
     private var windowMainTunnelInstalledAt: Date?
+    /// The pairing file the window's main tunnel was made with (its modification date): a newly
+    /// imported pairing file needs a new tunnel.
+    private var windowMainTunnelPairingStamp: Date?
+
+    private static func pairingFileStamp() -> Date? {
+        let url = PairingFileStore.prepareURL()
+        return (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+    }
+
+    /// Whether startTunnel keeps the current main tunnel because a cellular window made it: the
+    /// setting is still on, the target is still this device, the pairing file is the same, and
+    /// MainTunnelPolicy allows it.
+    private func keepsWindowMainTunnel() -> Bool {
+        tunnelLock.lock()
+        let installed = windowMainTunnelInstalledAt
+        let stamp = windowMainTunnelPairingStamp
+        let hasMain = adapter != nil && handshake != nil
+        tunnelLock.unlock()
+        guard let installed, hasMain, CellularWindow.isEnabled,
+              DeviceConnectionContext.targetIPAddress == DeviceConnectionContext.defaultTargetIPAddress,
+              stamp == Self.pairingFileStamp() else {
+            return false
+        }
+        let age = Date().timeIntervalSince(installed)
+        let cellularOnly = age < MainTunnelPolicy.grace ? false : CellularWindow.pathSnapshot().cellularOnly
+        guard MainTunnelPolicy.keepWindowTunnel(installedAt: installed, now: Date(), cellularOnly: cellularOnly) else {
+            return false
+        }
+        CellularWindow.log(String(format: "keeping the window's main tunnel (installed %.0f s ago%@)", age,
+                                  cellularOnly ? ", cellular only" : ""))
+        return true
+    }
 
     /// The JIT request the current thread works for, if any.
     static var currentRequest: String? {
@@ -596,11 +628,13 @@ final class JITEnableContext {
         guard let spare = takeSpareTunnel(for: request), spare.tunnel.adapter != nil, spare.tunnel.handshake != nil else {
             return false
         }
+        let stamp = Self.pairingFileStamp()
         tunnelLock.lock()
         let replaced = TunnelHandles(adapter: adapter, handshake: handshake)
         adapter = spare.tunnel.adapter
         handshake = spare.tunnel.handshake
         windowMainTunnelInstalledAt = Date()
+        windowMainTunnelPairingStamp = stamp
         tunnelLock.unlock()
         retire(replaced)
         CellularWindow.log("main tunnel installed from the window (\(spare.left) left for this request)")
@@ -642,18 +676,8 @@ final class JITEnableContext {
     func startTunnel() throws {
         // A main tunnel a cellular window installed is kept: StikDebug restarts the tunnel on every
         // return to the foreground and for every external request, and on cellular that would be refused.
-        tunnelLock.lock()
-        let installed = windowMainTunnelInstalledAt
-        let hasMain = adapter != nil && handshake != nil
-        tunnelLock.unlock()
-        if let installed, hasMain {
-            let age = Date().timeIntervalSince(installed)
-            let cellularOnly = age < MainTunnelPolicy.grace ? false : CellularWindow.pathSnapshot().cellularOnly
-            if MainTunnelPolicy.keepWindowTunnel(installedAt: installed, now: Date(), cellularOnly: cellularOnly) {
-                CellularWindow.log(String(format: "keeping the window's main tunnel (installed %.0f s ago%@)", age,
-                                          cellularOnly ? ", cellular only" : ""))
-                return
-            }
+        if keepsWindowMainTunnel() {
+            return
         }
 
         tunnelLock.lock()
@@ -697,6 +721,11 @@ final class JITEnableContext {
             newAdapter = newTunnel.adapter
             newHandshake = newTunnel.handshake
         } catch let tunnelError as NSError {
+            // A cellular window may have installed a main tunnel while this connection was failing
+            // (StikDebug reconnects when Shortcuts hands it back): keep that one instead of failing.
+            if keepsWindowMainTunnel() {
+                return
+            }
             finalError = tunnelError
             throw tunnelError
         }
@@ -704,9 +733,11 @@ final class JITEnableContext {
         // With the cellular window on, a main tunnel connected while the path is cellular only or down
         // was made inside a window (otherwise it would have been refused): keep it like a window's.
         var madeInWindow = false
-        if CellularWindow.isEnabled {
+        var stamp: Date?
+        if CellularWindow.isEnabled, DeviceConnectionContext.targetIPAddress == DeviceConnectionContext.defaultTargetIPAddress {
             let path = CellularWindow.pathSnapshot()
             madeInWindow = path.cellularOnly || path.unsatisfied
+            stamp = madeInWindow ? Self.pairingFileStamp() : nil
         }
 
         tunnelLock.lock()
@@ -714,6 +745,7 @@ final class JITEnableContext {
         adapter = newAdapter
         handshake = newHandshake
         windowMainTunnelInstalledAt = madeInWindow ? Date() : nil
+        windowMainTunnelPairingStamp = stamp
         tunnelLock.unlock()
         retire(replaced)
     }

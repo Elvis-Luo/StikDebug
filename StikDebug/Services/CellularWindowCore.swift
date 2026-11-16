@@ -76,7 +76,7 @@ enum WindowOutcome: Equatable, CustomStringConvertible {
     case notNeeded(String)
     /// Tunnels opened for this request (count). `viaShortcut` is false when 10.7.0.1 already answered.
     case opened(Int, viaShortcut: Bool)
-    /// The shortcut is not installed or failed (x-error, or Shortcuts never came back).
+    /// The shortcut is not installed or failed (x-error or x-cancel).
     case shortcutMissing(String)
     /// No connect got through.
     case failed(String)
@@ -96,7 +96,8 @@ final class CellularWindowEngine {
     struct Timing {
         var tunnelsPerRequest = 8
         var networkSettleLimit: TimeInterval = 30
-        var callbackLimit: TimeInterval = 10
+        /// How long Shortcuts may take to come back (a cold start can be slow).
+        var callbackLimit: TimeInterval = 20
         var afterCallbackLimit: TimeInterval = 25
         var probeInterval: TimeInterval = 0.35
         var probeTimeout: TimeInterval = 0.4
@@ -186,7 +187,9 @@ final class CellularWindowEngine {
             if let error { return .shortcutMissing(error) }
             let now = env.now()
             if callback == nil, now.timeIntervalSince(launched) > timing.callbackLimit {
-                return .shortcutMissing("Shortcuts did not come back within \(Int(timing.callbackLimit)) s")
+                // Not proof that the shortcut is missing (a missing one comes back through x-error):
+                // report a failed window, which offers Try Again.
+                return .failed("Shortcuts did not come back within \(Int(timing.callbackLimit)) s")
             }
             if let callback, now.timeIntervalSince(callback) > timing.afterCallbackLimit {
                 return .failed("no connect got through in the \(Int(timing.afterCallbackLimit)) s after the shortcut "
@@ -292,9 +295,11 @@ enum MainTunnelPolicy {
 
 // MARK: - Requests
 
-/// External JIT requests by target app. A second request for an app whose earlier request is still being handled is a
-/// duplicate (the app asked again while StikDebug was working) and is dropped. A failure alert is not shown for a
-/// request a newer request for the same app replaced, or when another request for that app got its debugger attached.
+/// External JIT requests by target app. A second request for an app whose earlier request is still
+/// waiting (window, connection, launch; not yet attached) is a duplicate: the app asked again while
+/// StikDebug was working, and it is dropped. Once the debugger is attached, a new request for that app
+/// is a new launch and goes on. A failure alert is not shown for a request that a newer request for
+/// the same app replaced, or while another request for that app has its debugger attached.
 final class RequestRegistry {
     enum State: Equatable { case waiting, session, done(success: Bool) }
     struct Entry {
@@ -306,7 +311,7 @@ final class RequestRegistry {
     }
     enum Begin: Equatable { case proceed, duplicate(of: String) }
 
-    /// An unfinished request older than this no longer blocks a new one for the same app.
+    /// A waiting request older than this no longer blocks a new one for the same app.
     let busyLimit: TimeInterval
     private let lock = NSLock()
     private var entries: [Entry] = []
@@ -319,7 +324,8 @@ final class RequestRegistry {
         lock.lock()
         defer { lock.unlock() }
         if entries.contains(where: { $0.id == id }) { return .proceed } // the same request handed over again
-        if let busy = entries.last(where: { $0.target == target && $0.finished == nil && now.timeIntervalSince($0.started) < busyLimit }) {
+        if let busy = entries.last(where: { $0.target == target && $0.state == .waiting && $0.finished == nil
+                                             && now.timeIntervalSince($0.started) < busyLimit }) {
             return .duplicate(of: busy.id)
         }
         entries.append(Entry(id: id, target: target, started: now, state: .waiting))
@@ -353,10 +359,8 @@ final class RequestRegistry {
         if let newer = entries.last(where: { $0.target == mine.target && $0.id != id && $0.started > mine.started }) {
             return "superseded by \(newer.id.prefix(8))"
         }
-        // Only requests from around the same time count (an old success says nothing about this launch).
-        if let other = entries.first(where: { $0.target == mine.target && $0.id != id
-                                              && abs($0.started.timeIntervalSince(mine.started)) < busyLimit
-                                              && ($0.state == .session || $0.state == .done(success: true)) }) {
+        // Only a debugger attached right now counts; a session that has ended says nothing about this one.
+        if let other = entries.first(where: { $0.target == mine.target && $0.id != id && $0.state == .session }) {
             return "\(mine.target) already has its debugger from \(other.id.prefix(8))"
         }
         return nil

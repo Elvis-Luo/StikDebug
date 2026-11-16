@@ -163,15 +163,29 @@ struct CellularWindowEngineTests {
         #expect(device.openedTunnels == 0)
     }
 
-    @Test func shortcutThatNeverAnswersGivesUpAfterTenSeconds() {
+    @Test func shortcutThatNeverAnswersFailsAfterTwentySecondsWithoutCallingItMissing() {
         let device = FakeDevice()
         device.shortcut = .neverAnswers
         let started = device.t
-        guard case .shortcutMissing = makeEngine(device).run(request: "A") else {
-            Issue.record("expected shortcutMissing")
+        guard case .failed = makeEngine(device).run(request: "A") else {
+            Issue.record("expected failed")
             return
         }
-        #expect(device.t - started < 12)
+        #expect(device.t - started >= 20 && device.t - started < 22)
+    }
+
+    @Test func slowShortcutsStillOpensTheWindow() {
+        // Shortcuts starts cold: Airplane Mode toggles after 12 s and the callback comes at 15 s.
+        let device = FakeDevice()
+        device.shortcut = .neverAnswers
+        let engine = makeEngine(device)
+        device.schedule(at: 12) { device.airplane = true }
+        device.schedule(at: 13) {
+            device.airplane = false
+            device.cellularBackAt = device.t + 6
+        }
+        device.schedule(at: 15) { engine.shortcutReturned(error: nil) }
+        #expect(engine.run(request: "A") == .opened(8, viaShortcut: true))
     }
 
     @Test func noConnectionInTheWindowFails() {
@@ -232,7 +246,7 @@ struct CellularTunnelPoolTests {
 struct CellularRequestRegistryTests {
     private let start = Date(timeIntervalSinceReferenceDate: 0)
 
-    @Test func secondRequestForABusyAppIsADuplicate() {
+    @Test func secondRequestWhileTheFirstStillWaitsIsADuplicate() {
         let registry = RequestRegistry()
         #expect(registry.begin(id: "A1", target: "com.example.app", now: start) == .proceed)
         #expect(registry.begin(id: "A1", target: "com.example.app", now: start) == .proceed)
@@ -240,6 +254,14 @@ struct CellularRequestRegistryTests {
         #expect(registry.begin(id: "B1", target: "com.example.other", now: start.addingTimeInterval(1)) == .proceed)
         registry.finish("A1", success: true, now: start.addingTimeInterval(20))
         #expect(registry.begin(id: "A3", target: "com.example.app", now: start.addingTimeInterval(30)) == .proceed)
+    }
+
+    @Test func aRelaunchWhileTheFirstSessionRunsGoesOn() {
+        // A script that keeps running after its app crashed must not block the app's next request.
+        let registry = RequestRegistry()
+        _ = registry.begin(id: "A1", target: "app", now: start)
+        registry.markSession("A1")
+        #expect(registry.begin(id: "A2", target: "app", now: start.addingTimeInterval(10)) == .proceed)
     }
 
     @Test func aBusyRequestStopsBlockingAfterTheLimit() {
@@ -259,6 +281,25 @@ struct CellularRequestRegistryTests {
         registry.markSession("A2")
         _ = registry.begin(id: "B1", target: "other", now: start)
         #expect(registry.alertSuppression(for: "B1") == nil)
+
+        // While another request for the app has its debugger attached, a failure is not alerted.
+        let attached = RequestRegistry()
+        _ = attached.begin(id: "D1", target: "app", now: start)
+        attached.markSession("D1")
+        #expect(attached.begin(id: "D2", target: "app", now: start.addingTimeInterval(10)) == .proceed)
+        attached.finish("D2", success: false, now: start.addingTimeInterval(15))
+        #expect(attached.alertSuppression(for: "D2")?.contains("already has its debugger") == true)
+        attached.finish("D1", success: true, now: start.addingTimeInterval(20))
+        #expect(attached.alertSuppression(for: "D2") == nil)
+
+        // A separate request that fails shortly after an earlier one succeeded is alerted.
+        let separate = RequestRegistry(busyLimit: 120)
+        _ = separate.begin(id: "E1", target: "app", now: start)
+        separate.markSession("E1")
+        separate.finish("E1", success: true, now: start.addingTimeInterval(10))
+        _ = separate.begin(id: "E2", target: "app", now: start.addingTimeInterval(30))
+        separate.finish("E2", success: false, now: start.addingTimeInterval(40))
+        #expect(separate.alertSuppression(for: "E2") == nil)
 
         // An old success for the same app says nothing about a request much later.
         let later = RequestRegistry(busyLimit: 120)
