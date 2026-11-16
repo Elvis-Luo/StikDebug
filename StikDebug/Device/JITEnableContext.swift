@@ -23,7 +23,7 @@ final class RemotePairingPortResolver {
         return selectedEndpoint
     }
 
-    private static func record(targetIPAddress: String, port: UInt16, source: String) {
+    fileprivate static func record(targetIPAddress: String, port: UInt16, source: String) {
         let endpoint = "\(targetIPAddress):\(port) (\(source))"
         stateLock.lock()
         selectedEndpoint = endpoint
@@ -40,17 +40,38 @@ final class RemotePairingPortResolver {
     private var resolvedPort: UInt16?
     private var finished = false
 
-    static func resolve(targetIPAddress: String = DeviceConnectionContext.targetIPAddress, timeout: TimeInterval = 5) -> UInt16 {
+    /// The port a tunnel to this device reached during this boot.
+    static let portCache = RemotePairingPortCache(store: UserDefaults.standard, bootTime: { bootTime() })
+
+    /// The Manual port from Settings, if one is set and valid.
+    static func manualPort() -> UInt16? {
         let override = (UserDefaults.standard.string(forKey: overrideKey) ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if !override.isEmpty, let port = UInt16(override), port != 0 {
-            record(targetIPAddress: targetIPAddress, port: port, source: "Manual")
             return port
         }
         if !override.isEmpty {
             NSLog("[StikDebug] Ignoring invalid manual Remote Pairing port: %@", override)
         }
+        return nil
+    }
 
+    static func resolve(targetIPAddress: String = DeviceConnectionContext.targetIPAddress, timeout: TimeInterval = 5) -> UInt16 {
+        if let port = manualPort() {
+            record(targetIPAddress: targetIPAddress, port: port, source: "Manual")
+            return port
+        }
+        if targetIPAddress == DeviceConnectionContext.defaultTargetIPAddress, let cached = portCache.port() {
+            record(targetIPAddress: targetIPAddress, port: cached, source: "Verified this boot")
+            return cached
+        }
+        let found = discoverForDevice(targetIPAddress: targetIPAddress, timeout: timeout)
+        record(targetIPAddress: targetIPAddress, port: found.port, source: found.source)
+        return found.port
+    }
+
+    /// Bonjour discovery with the fallbacks, without the Manual port or the verified port.
+    static func discoverForDevice(targetIPAddress: String, timeout: TimeInterval = 5) -> (port: UInt16, source: String) {
         let result = discover(targetIPAddress: targetIPAddress, timeout: timeout)
         var port = result.port
         var source = result.source
@@ -65,8 +86,7 @@ final class RemotePairingPortResolver {
                 source = "Bonjour, earlier this boot"
             }
         }
-        record(targetIPAddress: targetIPAddress, port: port, source: source)
-        return port
+        return (port, source)
     }
 
     private static let rememberedPortKey = "RemotePairingRememberedPort"
@@ -445,19 +465,49 @@ final class JITEnableContext {
             guard parseResult == 1 else {
                 throw ConnectionDiagnostics.annotate(makeError("Failed to parse target IP address.", code: -18), stage: .targetAddress, targetIP: deviceIP)
             }
+            // This device without a Manual port: a port a tunnel reached this boot is used without a
+            // Bonjour discovery; if it fails, discover again and retry once.
+            if deviceIP == DeviceConnectionContext.defaultTargetIPAddress, RemotePairingPortResolver.manualPort() == nil {
+                let result: Result<TunnelHandles, Error> = RemotePairingPortResolver.portCache.connect(
+                    discover: { RemotePairingPortResolver.discoverForDevice(targetIPAddress: deviceIP) },
+                    attempt: { port, source in
+                        RemotePairingPortResolver.record(targetIPAddress: deviceIP, port: port, source: source)
+                        var portAddress = addr
+                        portAddress.sin_port = port.bigEndian
+                        let data = withUnsafeBytes(of: &portAddress) { Data($0) }
+                        return Result {
+                            do {
+                                return try connectTunnel(address: data, hostname: hostname, pairingFile: pairingFile)
+                            } catch let failure as NSError {
+                                throw ConnectionDiagnostics.annotate(failure, stage: .tunnel, targetIP: deviceIP, port: port)
+                            }
+                        }
+                    }
+                )
+                return try result.get()
+            }
             let port = RemotePairingPortResolver.resolve(targetIPAddress: deviceIP)
             remotePairingPort = port
             addr.sin_port = port.bigEndian
             address = withUnsafeBytes(of: &addr) { Data($0) }
         }
 
+        do {
+            return try connectTunnel(address: address, hostname: target?.hostname ?? hostname, pairingFile: pairingFile)
+        } catch let failure as NSError where failure.code != -18 {
+            throw ConnectionDiagnostics.annotate(failure, stage: .tunnel, targetIP: deviceIP, port: remotePairingPort)
+        }
+    }
+
+    /// One tunnel_create_rppairing to `address`.
+    private func connectTunnel(address: Data, hostname: String, pairingFile: OpaquePointer) throws -> TunnelHandles {
         var socketAddress = sockaddr_storage()
         guard address.count <= MemoryLayout<sockaddr_storage>.size else {
             throw makeError("Invalid target network address.", code: -18)
         }
         withUnsafeMutableBytes(of: &socketAddress) { _ = address.copyBytes(to: $0) }
         var tunnel = TunnelHandles()
-        let ffiError = (target?.hostname ?? hostname).withCString { hostname in
+        let ffiError = hostname.withCString { hostname in
             withUnsafePointer(to: &socketAddress) { pointer in
                 pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                     tunnel_create_rppairing(
@@ -476,7 +526,7 @@ final class JITEnableContext {
 
         if let ffiError {
             tunnel.free()
-            throw ConnectionDiagnostics.annotate(error(from: ffiError, fallback: "Failed to create tunnel"), stage: .tunnel, targetIP: deviceIP, port: remotePairingPort)
+            throw error(from: ffiError, fallback: "Failed to create tunnel")
         }
 
         guard tunnel.adapter != nil, tunnel.handshake != nil else {

@@ -832,7 +832,8 @@ func simulate_location(_ deviceIP: String, _ latitude: Double, _ longitude: Doub
 
     var address = sockaddr_in()
     address.sin_family = sa_family_t(AF_INET)
-    address.sin_port = in_port_t(RemotePairingPortResolver.resolve(targetIPAddress: deviceIP)).bigEndian
+    let remotePairingPort = RemotePairingPortResolver.resolve(targetIPAddress: deviceIP)
+    address.sin_port = in_port_t(remotePairingPort).bigEndian
 
     let inetResult = deviceIP.withCString { inet_pton(AF_INET, $0, &address.sin_addr) }
     guard inetResult == 1 else {
@@ -870,6 +871,8 @@ func simulate_location(_ deviceIP: String, _ latitude: Double, _ longitude: Doub
     if let providerError {
         idevice_error_free(providerError)
         LocationSimulationState.cleanup()
+        // A port verified earlier this boot that no longer connects is discovered again next time.
+        RemotePairingPortResolver.portCache.forget(remotePairingPort)
         return LocationSimulationStatus.providerCreate
     }
 
