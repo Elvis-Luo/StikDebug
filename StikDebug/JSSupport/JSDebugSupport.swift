@@ -62,24 +62,10 @@ private func hexCharacter(for value: UInt8) -> UInt8 {
     return value + 87
 }
 
-private func fillAddress(into buffer: inout [UInt8], at index: Int, address: UInt64) {
-    let masks: [UInt64] = [
-        0xf00000000,
-        0x0f0000000,
-        0x00f000000,
-        0x000f00000,
-        0x0000f0000,
-        0x00000f000,
-        0x000000f00,
-        0x0000000f0,
-        0x00000000f,
-    ]
-
-    for (offset, mask) in masks.enumerated() {
-        let shift = UInt64((masks.count - 1 - offset) * 4)
-        let nibble = UInt8((address & mask) >> shift)
-        buffer[index + offset] = hexCharacter(for: nibble)
-    }
+/// The address in hex, as many digits as it needs. A fixed nine digits cut addresses at or above
+/// 0x1000000000 (for example 0x7060000000 became 0x060000000).
+private func hexAddress(_ address: UInt64) -> [UInt8] {
+    Array(String(address, radix: 16).utf8)
 }
 
 private func writeChecksum(into buffer: inout [UInt8], at startIndex: Int) {
@@ -101,27 +87,29 @@ private func jitPageCount(for regionSize: UInt64) -> Int {
     return Int(((regionSize - 1) / jitPageSize) + 1)
 }
 
-private func makeBulkWriteCommands(startAddress: UInt64, regionSize: UInt64) -> [UInt8] {
+/// One `$M<address>,1:69#<checksum>` packet per page. The packets differ in length with the address,
+/// so `ends` holds the end offset of each one.
+private func makeBulkWriteCommands(startAddress: UInt64, regionSize: UInt64) -> (bytes: [UInt8], ends: [Int]) {
     let commandCount = jitPageCount(for: regionSize)
-    var buffer = [UInt8](repeating: 0, count: commandCount * 19)
+    var buffer = [UInt8]()
+    buffer.reserveCapacity(commandCount * 26)
+    var ends = [Int]()
+    ends.reserveCapacity(commandCount)
 
     var currentAddress = startAddress
-    for commandIndex in 0..<commandCount {
-        let start = commandIndex * 19
-        buffer[start + 0] = Character("$").asciiValue!
-        buffer[start + 1] = Character("M").asciiValue!
-        fillAddress(into: &buffer, at: start + 2, address: currentAddress)
-        buffer[start + 11] = Character(",").asciiValue!
-        buffer[start + 12] = Character("1").asciiValue!
-        buffer[start + 13] = Character(":").asciiValue!
-        buffer[start + 14] = Character("6").asciiValue!
-        buffer[start + 15] = Character("9").asciiValue!
-        buffer[start + 16] = Character("#").asciiValue!
+    for _ in 0..<commandCount {
+        let start = buffer.count
+        buffer.append(Character("$").asciiValue!)
+        buffer.append(Character("M").asciiValue!)
+        buffer.append(contentsOf: hexAddress(currentAddress))
+        buffer.append(contentsOf: Array(",1:69#".utf8))
+        buffer.append(contentsOf: [0, 0])
         writeChecksum(into: &buffer, at: start + 1)
+        ends.append(buffer.count)
         currentAddress += jitPageSize
     }
 
-    return buffer
+    return (buffer, ends)
 }
 
 func handleJITPageWrite(_ context: JSContext?, _ startAddr: UInt64, _ jitPagesSize: UInt64, _ debugProxy: OpaquePointer?) -> String? {
@@ -130,14 +118,14 @@ func handleJITPageWrite(_ context: JSContext?, _ startAddr: UInt64, _ jitPagesSi
         return nil
     }
 
-    let commandBuffer = makeBulkWriteCommands(startAddress: startAddr, regionSize: jitPagesSize)
-    let commandCount = jitPageCount(for: jitPagesSize)
+    let (commandBuffer, commandEnds) = makeBulkWriteCommands(startAddress: startAddr, regionSize: jitPagesSize)
+    let commandCount = commandEnds.count
     let commandsPerBatch = 128
 
     for batchStart in stride(from: 0, to: commandCount, by: commandsPerBatch) {
         let commandsToSend = min(commandsPerBatch, commandCount - batchStart)
-        let byteOffset = batchStart * 19
-        let byteCount = commandsToSend * 19
+        let byteOffset = batchStart == 0 ? 0 : commandEnds[batchStart - 1]
+        let byteCount = commandEnds[batchStart + commandsToSend - 1] - byteOffset
 
         let ffiError = commandBuffer.withUnsafeBytes { rawBuffer -> UnsafeMutablePointer<IdeviceFfiError>? in
             let baseAddress = rawBuffer.bindMemory(to: UInt8.self).baseAddress!
