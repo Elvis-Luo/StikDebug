@@ -83,6 +83,18 @@ struct JITSessionWatchTests {
         #expect(failed.phase(at: at(1)) == .failed)
     }
 
+    @Test func appQuitThenScriptErrorShowsAppQuit() {
+        var watch = JITSessionWatch()
+        watch.continueStarted(at: at(0))
+        watch.continueEnded(response: "W00", at: at(10))
+        // The script sends its next command to an app that is gone and throws.
+        watch.scriptFailed()
+        #expect(watch.phase(at: at(11)) == .appQuit)
+        watch.finish(success: true)
+        #expect(watch.phase(at: at(12)) == .appQuit)
+        #expect(watch.closeDelay(logOpen: false) == 0)
+    }
+
     @Test func aScriptThatKeepsContinuingStaysWaiting() {
         var watch = JITSessionWatch()
         watch.continueStarted(at: at(0))

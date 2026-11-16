@@ -70,8 +70,9 @@ struct JITSessionWatch: Equatable {
 
     func phase(at now: Date) -> Phase {
         if finished == false { return .failed }
-        if scriptError { return .scriptError }
+        // An app that quit comes first: a script that keeps sending commands then throws on the next one.
         if targetExited { return .appQuit }
+        if scriptError { return .scriptError }
         if finished == true { return .enabled }
         if let since = continueSince {
             // Once the script has waited for the app, a later continue (a script that keeps
@@ -83,9 +84,9 @@ struct JITSessionWatch: Equatable {
     }
 
     /// When the page closes by itself after the session ended. nil keeps it open: a failed
-    /// session (its alert shows as before), a script error, or while the log is open.
+    /// session (its alert shows as before), a script error while the app still ran, or while the log is open.
     func closeDelay(logOpen: Bool) -> TimeInterval? {
-        guard finished == true, !scriptError, !logOpen else { return nil }
+        guard finished == true, targetExited || !scriptError, !logOpen else { return nil }
         return targetExited ? 0 : Self.enabledShownFor
     }
 }
