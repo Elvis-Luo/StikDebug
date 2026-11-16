@@ -8,11 +8,16 @@ import AVFoundation
 final class BackgroundAudioManager {
     static let shared = BackgroundAudioManager()
 
+    // All state below lives on this queue, and every request returns at once: activating the audio session and
+    // starting the engine can take seconds, and must not hold up the main thread or the caller.
+    private let queue = DispatchQueue(label: "com.stik.keepalive.audio", qos: .userInitiated)
+    /// Set at the end of init (before `shared` is handed out), never changed.
+    private var counter: SerialActivityCounter!
+
     private var engine = AVAudioEngine()
     private var player = AVAudioPlayerNode()
     private var isRunning = false
-    private var activityCount = 0
-    private var healthCheckTimer: Timer?
+    private var healthCheckTimer: DispatchSourceTimer?
 
     private init() {
         NotificationCenter.default.addObserver(
@@ -27,23 +32,27 @@ final class BackgroundAudioManager {
             name: AVAudioSession.mediaServicesWereResetNotification,
             object: nil
         )
+        counter = SerialActivityCounter(queue: queue) { [weak self] count in
+            self?.refreshRunningState(activityCount: count)
+        }
     }
 
     func configurationDidChange() {
-        refreshRunningState()
+        queue.async {
+            self.refreshRunningState(activityCount: self.counter.valueOnQueue)
+        }
     }
 
     func requestStart() {
-        activityCount += 1
-        refreshRunningState()
+        counter.increment()
     }
 
     func requestStop() {
-        activityCount = max(activityCount - 1, 0)
-        refreshRunningState()
+        counter.decrement()
     }
 
-    private func refreshRunningState() {
+    /// On the queue.
+    private func refreshRunningState(activityCount: Int) {
         let shouldRun = activityCount > 0 && UserDefaults.standard.bool(forKey: "keepAliveAudio")
         guard shouldRun != isRunning else {
             if shouldRun {
@@ -57,7 +66,7 @@ final class BackgroundAudioManager {
             startEngine()
             startHealthCheck()
         } else {
-            healthCheckTimer?.invalidate()
+            healthCheckTimer?.cancel()
             healthCheckTimer = nil
             player.stop()
             engine.stop()
@@ -65,6 +74,7 @@ final class BackgroundAudioManager {
         }
     }
 
+    /// On the queue.
     private func startEngine() {
         do {
             engine.stop()
@@ -100,13 +110,17 @@ final class BackgroundAudioManager {
     // Runs every 2 seconds to reclaim the session if continuous game audio
     // holds it and the interruption-ended notification never fires.
     private func startHealthCheck() {
-        let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
+        healthCheckTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + 2, repeating: 2)
+        timer.setEventHandler { [weak self] in
             self?.recoverIfNeeded()
         }
-        RunLoop.main.add(timer, forMode: .common)
+        timer.resume()
         healthCheckTimer = timer
     }
 
+    /// On the queue.
     private func recoverIfNeeded() {
         guard isRunning, !engine.isRunning || !player.isPlaying else { return }
         do {
@@ -123,19 +137,23 @@ final class BackgroundAudioManager {
     @objc private func handleInterruption(_ notification: Notification) {
         guard let typeValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
               let type = AVAudioSession.InterruptionType(rawValue: typeValue),
-              type == .ended,
-              isRunning else { return }
+              type == .ended else { return }
 
-        // Best-effort immediate resume; health check will cover failures.
-        try? AVAudioSession.sharedInstance().setActive(true)
-        if !engine.isRunning { try? engine.start() }
-        player.play()
+        queue.async {
+            guard self.isRunning else { return }
+            // Best-effort immediate resume; health check will cover failures.
+            try? AVAudioSession.sharedInstance().setActive(true)
+            if !self.engine.isRunning { try? self.engine.start() }
+            self.player.play()
+        }
     }
 
     @objc private func handleMediaServicesReset() {
-        guard isRunning else { return }
-        engine = AVAudioEngine()
-        player = AVAudioPlayerNode()
-        startEngine()
+        queue.async {
+            guard self.isRunning else { return }
+            self.engine = AVAudioEngine()
+            self.player = AVAudioPlayerNode()
+            self.startEngine()
+        }
     }
 }

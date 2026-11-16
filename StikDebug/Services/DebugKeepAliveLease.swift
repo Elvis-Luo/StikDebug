@@ -6,6 +6,12 @@
 import Foundation
 import UIKit
 
+/// Keeps StikDebug running while a debug session needs it: a background task, the silent
+/// audio and the background location, each reference-counted by its manager.
+///
+/// It never blocks its caller or the main thread: the background task is begun and ended directly (both calls are
+/// thread-safe), the audio starts and stops on its own queue (BackgroundAudioManager), and the location through
+/// main.async, where its CLLocationManager lives. Starts and stops stay balanced, since each queue runs them in order.
 final class DebugKeepAliveLease {
     private let stateLock = NSLock()
     private var isActive = false
@@ -22,16 +28,16 @@ final class DebugKeepAliveLease {
             return
         }
         isActive = false
+        let taskID = backgroundTaskID
+        backgroundTaskID = .invalid
         stateLock.unlock()
 
-        runOnMain {
-            BackgroundAudioManager.shared.requestStop()
+        BackgroundAudioManager.shared.requestStop()
+        DispatchQueue.main.async {
             BackgroundLocationManager.shared.requestStop()
-
-            if self.backgroundTaskID != .invalid {
-                UIApplication.shared.endBackgroundTask(self.backgroundTaskID)
-                self.backgroundTaskID = .invalid
-            }
+        }
+        if taskID != .invalid {
+            Self.application.endBackgroundTask(taskID)
         }
     }
 
@@ -44,21 +50,27 @@ final class DebugKeepAliveLease {
         isActive = true
         stateLock.unlock()
 
-        runOnMain {
-            BackgroundAudioManager.shared.requestStart()
+        BackgroundAudioManager.shared.requestStart()
+        DispatchQueue.main.async {
             BackgroundLocationManager.shared.requestStart()
-            self.backgroundTaskID = UIApplication.shared.beginBackgroundTask(withName: "StikDebugDebugSession") { [weak self] in
-                LogManager.shared.addWarningLog("Debug session background task expired")
-                self?.invalidate()
-            }
+        }
+        let taskID = Self.application.beginBackgroundTask(withName: "StikDebugDebugSession") { [weak self] in
+            LogManager.shared.addWarningLog("Debug session background task expired")
+            self?.invalidate()
+        }
+        stateLock.lock()
+        if isActive {
+            backgroundTaskID = taskID
+            stateLock.unlock()
+        } else {
+            // Invalidated while the task was being begun: end it now.
+            stateLock.unlock()
+            if taskID != .invalid { Self.application.endBackgroundTask(taskID) }
         }
     }
 
-    private func runOnMain(_ work: @escaping () -> Void) {
-        if Thread.isMainThread {
-            work()
-        } else {
-            DispatchQueue.main.sync(execute: work)
-        }
+    /// beginBackgroundTask and endBackgroundTask may be called from any thread.
+    private static var application: UIApplication {
+        UIApplication.shared
     }
 }
