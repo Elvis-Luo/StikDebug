@@ -19,7 +19,7 @@ struct HomeView: View {
     @State private var pendingExternalURLAction: HomeExternalAction?
     @State private var pendingLiveContainerApp: JITWarningApp?
     @State private var pendingStikDebugApp: JITWarningApp?
-    @State private var scriptRunModel: RunJSViewModel?
+    @ObservedObject private var sessionBoard = JITSessionBoard.shared
     @State private var isShowingPIDJIT = false
 
     private struct DebugFeedback: Identifiable {
@@ -49,6 +49,10 @@ struct HomeView: View {
         .overlay(alignment: .bottom) {
             if let debugFeedback {
                 debugFeedbackView(debugFeedback)
+                    .padding(.bottom, 40)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else if let session = sessionBoard.running.last {
+                JITSessionCapsule(session: session) { sessionBoard.showLog(of: session) }
                     .padding(.bottom, 40)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -135,16 +139,8 @@ struct HomeView: View {
                 enableJITByPID(pid, scriptURL: scriptURL)
             }
         }
-        .sheet(item: $scriptRunModel) { model in
-            NavigationStack {
-                RunJSView(model: model)
-                    .toolbar {
-                        ToolbarItem(placement: .topBarTrailing) {
-                            Button("Done") { scriptRunModel = nil }
-                        }
-                    }
-                    .navigationBarTitleDisplayMode(.inline)
-            }
+        .sheet(item: $sessionBoard.page) { session in
+            JITSessionPage(session: session) { sessionBoard.page = nil }
         }
     }
 
@@ -199,7 +195,7 @@ struct HomeView: View {
             return
         }
 
-        scriptRunModel = model
+        sessionBoard.showScript(model)
     }
 
     private func importPairingFile(_ result: Result<URL, Error>) {
@@ -355,7 +351,7 @@ struct HomeView: View {
         .accessibilityLabel(feedback.message)
     }
 
-    private func getJsCallback(_ script: Data, name: String? = nil, resumeBundleID: String? = nil) -> DebugAppCallback {
+    private func getJsCallback(_ script: Data, name: String? = nil, resumeBundleID: String? = nil, session: JITSessionBoard.Session) -> DebugAppCallback {
         return { pid, debugProxyHandle, remoteServerHandle, semaphore in
             let model = RunJSViewModel(pid: Int(pid),
                                        debugProxy: debugProxyHandle,
@@ -364,7 +360,7 @@ struct HomeView: View {
                                        resumeBundleID: resumeBundleID)
 
             DispatchQueue.main.async {
-                scriptRunModel = model
+                JITSessionBoard.shared.attach(model, to: session)
             }
 
             do {
@@ -379,11 +375,16 @@ struct HomeView: View {
     }
 
     private func startJITInBackground(bundleID: String? = nil, pid: Int? = nil, scriptData: Data? = nil, scriptName: String? = nil, triggeredByURLScheme: Bool = false, displayName: String? = nil) {
-        let targetName = displayName ?? bundleID ?? pid.map { String(format: "process %d".localized, $0) } ?? "app".localized
+        // A URL request names only the bundle ID; show the app's name from the installed apps list.
+        let targetName = displayName
+            ?? bundleID.flatMap(InstalledAppsViewModel.cachedDisplayName(for:))
+            ?? bundleID ?? pid.map { String(format: "process %d".localized, $0) } ?? "app".localized
         let startingMessage = String(format: "Starting JIT for %@".localized, targetName)
         LogManager.shared.addInfoLog("Starting Debug for \(bundleID ?? String(pid ?? 0))")
-        withAnimation {
-            debugFeedback = DebugFeedback(message: startingMessage, isError: false, isWorking: true)
+        // The session shows in the Home capsule, and on its page once its script runs.
+        let session = withAnimation {
+            debugFeedback = nil
+            return sessionBoard.begin(bundleID: bundleID, appName: targetName)
         }
         AccessibilityAnnouncer.announce(startingMessage)
 
@@ -399,6 +400,7 @@ struct HomeView: View {
             if triggeredByURLScheme, !waitForJITPrerequisites() {
                 DispatchQueue.main.async {
                     withAnimation {
+                        JITSessionBoard.shared.finish(session, success: false)
                         debugFeedback = nil
                     }
                     showAlert(
@@ -412,11 +414,16 @@ struct HomeView: View {
 
             let finishProcessing: (Bool, String?) -> Void = { success, detail in
                 DispatchQueue.main.async {
-                    let message = success
+                    // A session that ended because its app exited says so; its page closes at once.
+                    let appQuit = success && session.script?.watch.targetExited == true
+                    let message = appQuit
+                        ? JITSessionText.appQuitNotice(appName: targetName)
+                        : success
                         ? String(format: "JIT request completed for %@".localized, targetName)
                         : String(format: "JIT failed for %@".localized, targetName)
                     let feedback = DebugFeedback(message: message, isError: !success, isWorking: false)
                     withAnimation {
+                        JITSessionBoard.shared.finish(session, success: success)
                         debugFeedback = feedback
                     }
                     AccessibilityAnnouncer.announce(message)
@@ -449,7 +456,7 @@ struct HomeView: View {
 
             var callback: DebugAppCallback? = nil
             if ProcessInfo.processInfo.hasTXM, let sd = scriptData {
-                callback = getJsCallback(sd, name: scriptName ?? bundleID ?? "Script", resumeBundleID: resumeBundleID)
+                callback = getJsCallback(sd, name: scriptName ?? bundleID ?? "Script", resumeBundleID: resumeBundleID, session: session)
             }
 
             var lastDebugMessage: String?

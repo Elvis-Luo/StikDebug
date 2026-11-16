@@ -18,6 +18,9 @@ final class RunJSViewModel: ObservableObject, Identifiable, @unchecked Sendable 
     @Published var logs: [String] = []
     @Published var scriptName: String = "Script"
     @Published var executionInterrupted = false
+    /// What the JIT session page shows, noted from the continue commands on the main queue.
+    /// It never changes the commands, their order or their timing.
+    @Published private(set) var watch = JITSessionWatch()
     var pid: Int
     var debugProxy: OpaquePointer?
     var remoteServer: OpaquePointer?
@@ -65,8 +68,10 @@ final class RunJSViewModel: ObservableObject, Identifiable, @unchecked Sendable 
                 return ""
             }
 
+            let watched = JITSessionWatch.isContinue(commandStr)
+            if watched { self.watchContinue(response: nil) }
             let response = handleJSContextSendDebugCommand(self.context, commandStr, self.debugProxy) ?? ""
-
+            if watched { self.watchContinue(response: response) }
 
             return response
         }
@@ -142,6 +147,27 @@ final class RunJSViewModel: ObservableObject, Identifiable, @unchecked Sendable 
             return "failed to return to \(resumeBundleID)"
         }
         return "OK"
+    }
+
+    /// A continue was sent (`response` nil) or answered. Only noted for the session page.
+    private func watchContinue(response: String?) {
+        let now = Date()
+        DispatchQueue.main.async {
+            if let response {
+                self.watch.continueEnded(response: response, at: now)
+                return
+            }
+            self.watch.continueStarted(at: now)
+            // If the continue is still out by then, the page shows that the script is waiting.
+            DispatchQueue.main.asyncAfter(deadline: .now() + JITSessionWatch.waitingDelay + 0.1) {
+                self.objectWillChange.send()
+            }
+        }
+    }
+
+    /// The debug session ended (main queue), for the session page.
+    func finishWatch(success: Bool) {
+        watch.finish(success: success)
     }
 
     private func appendLog(_ message: String) {

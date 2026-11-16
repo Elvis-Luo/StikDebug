@@ -42,6 +42,13 @@ enum AlertPresenter {
         }
     }
 
+    /// An alert is on top (main queue). The JIT session page waits for it before it closes by
+    /// itself, so the alert is not dismissed with the page.
+    static var isShowingAlert: Bool {
+        guard let rootViewController = UIApplication.shared.activeRootViewController else { return false }
+        return UIApplication.shared.topViewController(from: rootViewController) is UIAlertController
+    }
+
     static func dismissPresentedAlert() {
         DispatchQueue.main.async {
             guard let rootViewController = UIApplication.shared.activeRootViewController,
