@@ -649,8 +649,16 @@ final class JITEnableContext {
                         break
                     }
 
+                    // A closed connection fails again at once on every call, so retrying it
+                    // spun this loop thousands of times a second until the session ended.
+                    if description.contains("BrokenPipe") || description.contains("channel closed") {
+                        log("Debug heartbeat stopped: connection closed (\(description))")
+                        break
+                    }
+
                     log("Debug heartbeat warning: \(description)")
                     interval = Self.defaultInterval
+                    Thread.sleep(forTimeInterval: 1)
                     continue
                 }
 
