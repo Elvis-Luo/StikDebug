@@ -262,7 +262,9 @@ struct HomeView: View {
                     }
                 }
             }
-            if config.scriptData == nil, let bundleID = config.bundleID,
+            // Only the confirmation dialog needs the script here (it says whether one will run). Without it,
+            // startJITInBackground looks the script up off the main thread, as it does for in-app requests.
+            if confirmExternalJITRequests, config.scriptData == nil, let bundleID = config.bundleID,
                let scriptInfo = ScriptStore.preferredScript(for: bundleID) {
                 config.scriptData = scriptInfo.data
                 config.scriptName = scriptInfo.name

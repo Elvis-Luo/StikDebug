@@ -141,7 +141,11 @@ enum ScriptStore {
             return nil
         }
 
-        let appName = (try? JITEnableContext.shared.getAppList()[bundleID]) ?? favoriteAppName(for: bundleID)
+        // The app names StikDebug cached from its last installed-apps read come first: asking the device for the app
+        // list is a round trip over the tunnel (about 2 s at a cold launch), and this can run on the main thread.
+        let appName = InstalledAppsViewModel.cachedDisplayName(for: bundleID)
+            ?? (try? JITEnableContext.shared.getAppList()[bundleID])
+            ?? favoriteAppName(for: bundleID)
         guard let appName,
               let resource = autoScriptResource(for: appName) else {
             return nil

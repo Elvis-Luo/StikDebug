@@ -22,9 +22,9 @@ final class InstalledAppsViewModel: ObservableObject {
 
     private let workQueue = DispatchQueue(label: "com.stik.installedApps", qos: .userInitiated)
     private let cache = UserDefaults(suiteName: ScriptStore.favoriteAppNamesSuiteName) ?? .standard
-    private let cacheKeyDebuggable = "cachedDebuggableApps"
-    private let cacheKeyNonDebuggable = "cachedNonDebuggableApps"
-    private let cacheKeySystem = "cachedSystemApps"
+    private static let cacheKeyDebuggable = "cachedDebuggableApps"
+    private static let cacheKeyNonDebuggable = "cachedNonDebuggableApps"
+    private static let cacheKeySystem = "cachedSystemApps"
     private var cancellables: Set<AnyCancellable> = []
     private var refreshInProgress = false
     private var refreshPending = false
@@ -128,6 +128,21 @@ final class InstalledAppsViewModel: ObservableObject {
         debuggableApps[bundleID] ?? systemApps[bundleID] ?? nonDebuggableApps[bundleID]
     }
 
+    /// An app's name from the installed apps list StikDebug read last (its cache), for a request
+    /// that names only the bundle ID. nil when the app is not in that list.
+    static func cachedDisplayName(for bundleID: String) -> String? {
+        let cache = UserDefaults(suiteName: ScriptStore.favoriteAppNamesSuiteName) ?? .standard
+        for key in [cacheKeyDebuggable, cacheKeySystem, cacheKeyNonDebuggable] {
+            guard let data = cache.data(forKey: key),
+                  let names = try? JSONDecoder().decode([String: String].self, from: data),
+                  let name = names[bundleID]?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else {
+                continue
+            }
+            return name
+        }
+        return nil
+    }
+
     func launchWithoutDebug(bundleID: String, completion: @escaping (Bool) -> Void) {
         workQueue.async {
             let success = JITEnableContext.shared.launchAppWithoutDebug(bundleID, logger: nil)
@@ -138,9 +153,9 @@ final class InstalledAppsViewModel: ObservableObject {
     }
 
     private func loadCachedApps() {
-        let cachedDebuggable = decode(cacheKeyDebuggable)
-        let cachedNonDebuggable = decode(cacheKeyNonDebuggable)
-        let cachedSystem = decode(cacheKeySystem)
+        let cachedDebuggable = decode(Self.cacheKeyDebuggable)
+        let cachedNonDebuggable = decode(Self.cacheKeyNonDebuggable)
+        let cachedSystem = decode(Self.cacheKeySystem)
 
         if !cachedDebuggable.isEmpty || !cachedNonDebuggable.isEmpty || !cachedSystem.isEmpty {
             apply(debuggable: cachedDebuggable, nonDebuggable: cachedNonDebuggable, system: cachedSystem)
@@ -156,9 +171,9 @@ final class InstalledAppsViewModel: ObservableObject {
     }
 
     private func cacheApps(debuggable: [String: String], nonDebuggable: [String: String], system: [String: String]) {
-        cache.set(encode(debuggable), forKey: cacheKeyDebuggable)
-        cache.set(encode(nonDebuggable), forKey: cacheKeyNonDebuggable)
-        cache.set(encode(system), forKey: cacheKeySystem)
+        cache.set(encode(debuggable), forKey: Self.cacheKeyDebuggable)
+        cache.set(encode(nonDebuggable), forKey: Self.cacheKeyNonDebuggable)
+        cache.set(encode(system), forKey: Self.cacheKeySystem)
     }
 
     private func decode(_ key: String) -> [String: String] {
