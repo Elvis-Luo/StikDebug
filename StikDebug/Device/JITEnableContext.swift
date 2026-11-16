@@ -291,6 +291,12 @@ final class JITEnableContext {
     private var tunnelSemaphore: DispatchSemaphore?
     private var lastTunnelError: NSError?
 
+    /// Tunnels that startTunnel replaced. Other threads take the handles through adapterHandle and
+    /// handshakeHandle and may still be using the old ones, so they are freed a minute later.
+    private static let retiredTunnelLifetime: TimeInterval = 60
+    private var retiredTunnels: [(tunnel: TunnelHandles, retired: Date)] = []
+    private let retiredLock = NSLock()
+
     private let syslogQueue = DispatchQueue(label: "com.stik.syslogrelay.queue")
     private var syslogStreaming = false
     private var syslogClient: OpaquePointer?
@@ -315,6 +321,9 @@ final class JITEnableContext {
         }
         if let adapter {
             adapter_free(adapter)
+        }
+        for var retired in retiredTunnels {
+            retired.tunnel.free()
         }
     }
 
@@ -495,15 +504,41 @@ final class JITEnableContext {
             throw tunnelError
         }
 
-        if let handshake {
-            rsd_handshake_free(handshake)
-        }
-        if let adapter {
-            adapter_free(adapter)
-        }
-
+        tunnelLock.lock()
+        let replaced = TunnelHandles(adapter: adapter, handshake: handshake)
         adapter = newAdapter
         handshake = newHandshake
+        tunnelLock.unlock()
+        retire(replaced)
+    }
+
+    /// Keeps a replaced tunnel for retiredTunnelLifetime before freeing it, and frees the ones
+    /// whose time is up. Freeing at once crashed a thread that was still connecting a service
+    /// through the old handles (SIGBUS in installation_proxy_connect_rsd).
+    private func retire(_ tunnel: TunnelHandles) {
+        let now = Date()
+        var due: [TunnelHandles] = []
+        let keep = tunnel.adapter != nil || tunnel.handshake != nil
+
+        retiredLock.lock()
+        retiredTunnels.removeAll { entry in
+            guard now.timeIntervalSince(entry.retired) >= Self.retiredTunnelLifetime else { return false }
+            due.append(entry.tunnel)
+            return true
+        }
+        if keep {
+            retiredTunnels.append((tunnel: tunnel, retired: now))
+        }
+        retiredLock.unlock()
+
+        for var old in due {
+            old.free()
+        }
+        if keep {
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + Self.retiredTunnelLifetime + 5) { [weak self] in
+                self?.retire(TunnelHandles())
+            }
+        }
     }
 
     func ensureTunnel() throws {
