@@ -336,6 +336,37 @@ final class JITEnableContext {
     private var retiredTunnels: [(tunnel: TunnelHandles, retired: Date)] = []
     private let retiredLock = NSLock()
 
+    /// Tunnels opened ahead of use in a cellular window (CellularWindow.swift). Each belongs to the
+    /// JIT request whose window opened it, and createTunnel hands it out only on a thread working for
+    /// that request. Unused ones are closed after spareLifetime.
+    private static let spareLifetime: TimeInterval = 120
+    private let spares = TunnelPool<TunnelHandles>(lifetime: spareLifetime)
+    private static let requestKey = "com.stik.jit-request"
+
+    /// When the main tunnel came from a cellular window. startTunnel keeps such a tunnel instead of
+    /// connecting anew, which on cellular would be refused (MainTunnelPolicy).
+    private var windowMainTunnelInstalledAt: Date?
+
+    /// The JIT request the current thread works for, if any.
+    static var currentRequest: String? {
+        Thread.current.threadDictionary[requestKey] as? String
+    }
+
+    static func setCurrentRequest(_ request: String?) {
+        if let request {
+            Thread.current.threadDictionary[requestKey] = request
+        } else {
+            Thread.current.threadDictionary.removeObject(forKey: requestKey)
+        }
+    }
+
+    static func withRequest<T>(_ request: String?, _ body: () throws -> T) rethrows -> T {
+        let previous = currentRequest
+        setCurrentRequest(request)
+        defer { setCurrentRequest(previous) }
+        return try body()
+    }
+
     private let syslogQueue = DispatchQueue(label: "com.stik.syslogrelay.queue")
     private var syslogStreaming = false
     private var syslogClient: OpaquePointer?
@@ -434,6 +465,13 @@ final class JITEnableContext {
 
     private func createTunnel(hostname: String, target: PairingPlacementTarget? = nil) throws -> TunnelHandles {
         let deviceIP = target.flatMap { PairedDeviceDiscovery.numericHost($0.address) } ?? DeviceConnectionContext.targetIPAddress
+        // A request whose cellular window opened tunnels takes one of those; outside the window a new
+        // connection would be refused on cellular.
+        if target == nil, deviceIP == DeviceConnectionContext.defaultTargetIPAddress,
+           let request = Self.currentRequest, let spare = takeSpareTunnel(for: request) {
+            CellularWindow.log("\(hostname): using a tunnel from this request's window (\(spare.left) left) [\(request.prefix(8))]")
+            return spare.tunnel
+        }
         let pairingFile: OpaquePointer
         do {
             pairingFile = try getPairingFile(at: target?.pairingFileURL)
@@ -497,7 +535,127 @@ final class JITEnableContext {
         return tunnel
     }
 
+    /// Opens `count` tunnels to the device on `port` at the same time and keeps them for `request`.
+    /// Returns how many opened within `timeout`; later ones still join the pool.
+    func fillSpareTunnels(port: UInt16, count: Int, request: String, timeout: TimeInterval = 8) -> Int {
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = port.bigEndian
+        guard DeviceConnectionContext.defaultTargetIPAddress.withCString({ inet_pton(AF_INET, $0, &address.sin_addr) }) == 1 else {
+            return 0
+        }
+        let addressData = withUnsafeBytes(of: &address) { Data($0) }
+        dropStaleSpareTunnels()
+        let group = DispatchGroup()
+        let countLock = NSLock()
+        var opened = 0
+        let started = Date()
+        for index in 1...max(count, 1) {
+            group.enter()
+            DispatchQueue.global(qos: .userInitiated).async { [self] in
+                defer { group.leave() }
+                let label = "StikDebugWindow\(index)"
+                let result: Result<TunnelHandles, NSError>
+                do {
+                    let pairingFile = try getPairingFile()
+                    defer { rp_pairing_file_free(pairingFile) }
+                    result = openTunnel(address: addressData, hostname: label, pairingFile: pairingFile)
+                } catch {
+                    result = .failure(error as NSError)
+                }
+                let elapsed = String(format: "%.2f s", Date().timeIntervalSince(started))
+                switch result {
+                case .success(let tunnel):
+                    spares.add(tunnel, request: request, at: Date())
+                    countLock.lock(); opened += 1; countLock.unlock()
+                    CellularWindow.log("tunnel \(label) opened in \(elapsed)")
+                case .failure(let failure):
+                    CellularWindow.log("tunnel \(label) failed after \(elapsed): \(failure.localizedDescription)")
+                }
+            }
+        }
+        _ = group.wait(timeout: .now() + timeout)
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + Self.spareLifetime + 5) { [weak self] in
+            self?.dropStaleSpareTunnels()
+        }
+        countLock.lock()
+        defer { countLock.unlock() }
+        return opened
+    }
+
+    private func takeSpareTunnel(for request: String) -> (tunnel: TunnelHandles, left: Int)? {
+        dropStaleSpareTunnels()
+        guard let spare = spares.take(for: request, now: Date()) else { return nil }
+        return (spare.handle, spare.left)
+    }
+
+    /// Makes one of `request`'s window tunnels the main tunnel (the disk image mount and the app
+    /// list use it), so the request does not have to connect anew. The old one is retired.
+    func installWindowMainTunnel(request: String) -> Bool {
+        guard let spare = takeSpareTunnel(for: request), spare.tunnel.adapter != nil, spare.tunnel.handshake != nil else {
+            return false
+        }
+        tunnelLock.lock()
+        let replaced = TunnelHandles(adapter: adapter, handshake: handshake)
+        adapter = spare.tunnel.adapter
+        handshake = spare.tunnel.handshake
+        windowMainTunnelInstalledAt = Date()
+        tunnelLock.unlock()
+        retire(replaced)
+        CellularWindow.log("main tunnel installed from the window (\(spare.left) left for this request)")
+        return true
+    }
+
+    private func dropStaleSpareTunnels() {
+        let stale = spares.dropStale(now: Date())
+        guard !stale.isEmpty else { return }
+        for var tunnel in stale { tunnel.free() }
+        CellularWindow.log("closed \(stale.count) unused window tunnel(s) after \(Int(Self.spareLifetime)) s")
+    }
+
+    private func openTunnel(address: Data, hostname: String, pairingFile: OpaquePointer) -> Result<TunnelHandles, NSError> {
+        var socketAddress = sockaddr_storage()
+        guard address.count <= MemoryLayout<sockaddr_storage>.size else {
+            return .failure(makeError("Invalid target network address.", code: -18))
+        }
+        withUnsafeMutableBytes(of: &socketAddress) { _ = address.copyBytes(to: $0) }
+        var tunnel = TunnelHandles()
+        let ffiError = hostname.withCString { hostname in
+            withUnsafePointer(to: &socketAddress) { pointer in
+                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    tunnel_create_rppairing($0, socklen_t(address.count), hostname, pairingFile, nil, nil, &tunnel.adapter, &tunnel.handshake)
+                }
+            }
+        }
+        if let ffiError {
+            tunnel.free()
+            return .failure(error(from: ffiError, fallback: "Failed to create tunnel"))
+        }
+        guard tunnel.adapter != nil, tunnel.handshake != nil else {
+            tunnel.free()
+            return .failure(makeError("Tunnel was created without valid handles"))
+        }
+        return .success(tunnel)
+    }
+
     func startTunnel() throws {
+        // A main tunnel a cellular window installed is kept: StikDebug restarts the tunnel on every
+        // return to the foreground and for every external request, and on cellular that would be refused.
+        tunnelLock.lock()
+        let installed = windowMainTunnelInstalledAt
+        let hasMain = adapter != nil && handshake != nil
+        tunnelLock.unlock()
+        if let installed, hasMain {
+            let age = Date().timeIntervalSince(installed)
+            let cellularOnly = age < MainTunnelPolicy.grace ? false : CellularWindow.pathSnapshot().cellularOnly
+            if MainTunnelPolicy.keepWindowTunnel(installedAt: installed, now: Date(), cellularOnly: cellularOnly) {
+                CellularWindow.log(String(format: "keeping the window's main tunnel (installed %.0f s ago%@)", age,
+                                          cellularOnly ? ", cellular only" : ""))
+                return
+            }
+        }
+
         tunnelLock.lock()
         if tunnelConnecting {
             let waitSemaphore = tunnelSemaphore
@@ -543,10 +701,19 @@ final class JITEnableContext {
             throw tunnelError
         }
 
+        // With the cellular window on, a main tunnel connected while the path is cellular only or down
+        // was made inside a window (otherwise it would have been refused): keep it like a window's.
+        var madeInWindow = false
+        if CellularWindow.isEnabled {
+            let path = CellularWindow.pathSnapshot()
+            madeInWindow = path.cellularOnly || path.unsatisfied
+        }
+
         tunnelLock.lock()
         let replaced = TunnelHandles(adapter: adapter, handshake: handshake)
         adapter = newAdapter
         handshake = newHandshake
+        windowMainTunnelInstalledAt = madeInWindow ? Date() : nil
         tunnelLock.unlock()
         retire(replaced)
     }
@@ -806,6 +973,8 @@ final class JITEnableContext {
     }
 
     private func connectHeartbeatKeepAlive(logger: LogFunc?) throws -> DebugHeartbeatKeepAlive {
+        // The heartbeat connects on its own queue, but it still works for this thread's JIT request.
+        let request = Self.currentRequest
         return DebugHeartbeatKeepAlive(
             logger: logger,
             makeClient: { [weak self] in
@@ -817,7 +986,7 @@ final class JITEnableContext {
                     )
                 }
 
-                var tunnel = try self.createTunnel(hostname: "StikDebugHeartbeat")
+                var tunnel = try Self.withRequest(request) { try self.createTunnel(hostname: "StikDebugHeartbeat") }
                 guard let adapter = tunnel.adapter, let handshake = tunnel.handshake else {
                     tunnel.free()
                     throw self.makeError("Tunnel is not connected")

@@ -199,7 +199,8 @@ struct HomeView: View {
                 pid: config.pid,
                 scriptData: config.scriptData,
                 scriptName: config.scriptName,
-                triggeredByURLScheme: true
+                triggeredByURLScheme: true,
+                request: config.requestID
             )
             pendingJITEnableConfiguration = nil
         }
@@ -284,6 +285,13 @@ struct HomeView: View {
             } else {
                 performExternalURLAction(action)
             }
+        case "cellular-window":
+            // x-success of the Airplane Mode shortcut (CellularWindow.swift).
+            CellularWindow.shared.shortcutReturned(error: nil)
+        case "cellular-window-failed":
+            // x-error or x-cancel of the Airplane Mode shortcut.
+            let detail = queryValue(["errorMessage", "errormessage", "error"], in: components) ?? "x-error or x-cancel without a message"
+            CellularWindow.shared.shortcutReturned(error: "Shortcuts: \(detail)")
         case "kill-process":
             if let pidStr = queryValue(["pid"], in: components) {
                 if let pid = Int32(pidStr), pid > 0 {
@@ -304,17 +312,19 @@ struct HomeView: View {
     private func performExternalURLAction(_ action: HomeExternalAction) {
         switch action {
         case .enableJIT(let config):
-            if hasAppeared {
-                startJITInBackground(
-                    bundleID: config.bundleID,
-                    pid: config.pid,
-                    scriptData: config.scriptData,
-                    scriptName: config.scriptName,
-                    triggeredByURLScheme: true
-                )
-            } else {
-                pendingJITEnableConfiguration = config
+            guard CellularWindow.isEnabled else {
+                startExternalJIT(config)
+                return
             }
+            // An app asking again while StikDebug still works on its earlier request is a duplicate.
+            let target = config.bundleID ?? config.pid.map { "pid \($0)" } ?? "unknown app"
+            if case .duplicate(let earlier) = CellularWindow.shared.registry.begin(id: config.requestID, target: target, now: Date()) {
+                CellularWindow.log("[\(config.requestID.prefix(8))] \(target) asked again while [\(earlier.prefix(8))] is still being handled; ignored")
+                return
+            }
+            // On cellular only, a new connection to the device is refused: open this request's
+            // Airplane Mode window first. Elsewhere it goes on straight away.
+            runCellularWindow(for: config)
         case .killProcess(let target):
             markTunnelDisconnected()
             startTunnelInBackground(showErrorUI: false)
@@ -366,8 +376,57 @@ struct HomeView: View {
         .accessibilityLabel(feedback.message)
     }
 
+    /// This request's Airplane Mode window, then the request goes on. Windows run one at a time.
+    private func runCellularWindow(for config: JITEnableConfiguration) {
+        CellularWindow.shared.run(request: config.requestID) { outcome in
+            switch outcome {
+            case .notNeeded, .opened:
+                startExternalJIT(config)
+            case .shortcutMissing(let detail):
+                // As before, after one hint per launch.
+                startExternalJIT(config)
+                CellularWindow.shared.showMissingShortcutHint(detail: detail) {}
+            case .failed(let detail):
+                // No alert for a request a newer one replaced, or whose app already got its debugger.
+                if let reason = CellularWindow.shared.registry.alertSuppression(for: config.requestID) {
+                    CellularWindow.log("[\(config.requestID.prefix(8))] window failed; no alert (\(reason))")
+                    CellularWindow.shared.registry.finish(config.requestID, success: false, now: Date())
+                    return
+                }
+                CellularWindow.showFailedAlert(detail: detail) { retry in
+                    if retry {
+                        CellularWindow.log("[\(config.requestID.prefix(8))] trying the window again")
+                        runCellularWindow(for: config)
+                    } else {
+                        CellularWindow.log("[\(config.requestID.prefix(8))] request ended")
+                        CellularWindow.shared.registry.finish(config.requestID, success: false, now: Date())
+                    }
+                }
+            }
+        }
+    }
+
+    private func startExternalJIT(_ config: JITEnableConfiguration) {
+        if hasAppeared {
+            startJITInBackground(
+                bundleID: config.bundleID,
+                pid: config.pid,
+                scriptData: config.scriptData,
+                scriptName: config.scriptName,
+                triggeredByURLScheme: true,
+                request: config.requestID
+            )
+        } else {
+            pendingJITEnableConfiguration = config
+        }
+    }
+
     private func getJsCallback(_ script: Data, name: String? = nil, resumeBundleID: String? = nil) -> DebugAppCallback {
         return { pid, debugProxyHandle, remoteServerHandle, semaphore in
+            // The debugger is attaching for this thread's request.
+            if let request = JITEnableContext.currentRequest {
+                CellularWindow.shared.registry.markSession(request)
+            }
             let model = RunJSViewModel(pid: Int(pid),
                                        debugProxy: debugProxyHandle,
                                        remoteServer: remoteServerHandle,
@@ -389,7 +448,7 @@ struct HomeView: View {
         }
     }
 
-    private func startJITInBackground(bundleID: String? = nil, pid: Int? = nil, scriptData: Data? = nil, scriptName: String? = nil, triggeredByURLScheme: Bool = false, displayName: String? = nil) {
+    private func startJITInBackground(bundleID: String? = nil, pid: Int? = nil, scriptData: Data? = nil, scriptName: String? = nil, triggeredByURLScheme: Bool = false, displayName: String? = nil, request: String? = nil) {
         let targetName = displayName ?? bundleID ?? pid.map { String(format: "process %d".localized, $0) } ?? "app".localized
         let startingMessage = String(format: "Starting JIT for %@".localized, targetName)
         LogManager.shared.addInfoLog("Starting Debug for \(bundleID ?? String(pid ?? 0))")
@@ -400,17 +459,26 @@ struct HomeView: View {
 
         if triggeredByURLScheme {
             markTunnelDisconnected()
-            startTunnelInBackground(showErrorUI: false)
+            startTunnelInBackground(showErrorUI: false, request: request)
         }
 
         DispatchQueue.global(qos: .background).async {
             let keepAliveLease = DebugKeepAliveLease()
             defer { keepAliveLease.invalidate() }
+            // This thread works for this request: it takes the tunnels the request's window opened.
+            JITEnableContext.setCurrentRequest(request)
+            defer { JITEnableContext.setCurrentRequest(nil) }
 
             if triggeredByURLScheme, !waitForJITPrerequisites() {
+                let suppressed = request.flatMap { CellularWindow.shared.registry.alertSuppression(for: $0) }
+                if let request { CellularWindow.shared.registry.finish(request, success: false, now: Date()) }
                 DispatchQueue.main.async {
                     withAnimation {
                         debugFeedback = nil
+                    }
+                    if let suppressed {
+                        CellularWindow.log("[\(request?.prefix(8) ?? "-")] not ready in time; no alert (\(suppressed))")
+                        return
                     }
                     showAlert(
                         title: "Failed to Enable JIT".localized,
@@ -422,6 +490,10 @@ struct HomeView: View {
             }
 
             let finishProcessing: (Bool, String?) -> Void = { success, detail in
+                // No failure alert for a request a newer one replaced, or whose app got its
+                // debugger from another request.
+                let suppressed = success ? nil : request.flatMap { CellularWindow.shared.registry.alertSuppression(for: $0) }
+                if let request { CellularWindow.shared.registry.finish(request, success: success, now: Date()) }
                 DispatchQueue.main.async {
                     let message = success
                         ? String(format: "JIT request completed for %@".localized, targetName)
@@ -440,7 +512,9 @@ struct HomeView: View {
                         }
                     }
 
-                    if !success {
+                    if !success, let suppressed {
+                        CellularWindow.log("[\(request?.prefix(8) ?? "-")] JIT failed; no alert (\(suppressed)): \(detail ?? "-")")
+                    } else if !success {
                         let failureMessage = detail ?? "StikDebug could not launch or attach to the selected app. Check that the VPN is enabled, the pairing file is current, and the app is still installed.".localized
                         showAlert(title: "Failed to Enable JIT".localized, message: failureMessage, showOk: true)
                     }

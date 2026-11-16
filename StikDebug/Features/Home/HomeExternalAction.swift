@@ -11,6 +11,8 @@ struct JITEnableConfiguration {
     var pid: Int?
     var scriptData: Data?
     var scriptName: String?
+    /// One id per external request; its cellular window and tunnels belong to it.
+    var requestID = UUID().uuidString
 }
 
 enum ProcessKillTarget {

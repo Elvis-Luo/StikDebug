@@ -17,6 +17,8 @@ struct SettingsView: View {
     @AppStorage(UserDefaults.Keys.txmOverride) private var overrideTXMDetection = false
     @AppStorage(UserDefaults.Keys.confirmExternalJITRequests) private var confirmExternalJITRequests = true
     @AppStorage("keepAliveAudio") private var keepAliveAudio = true
+    @AppStorage(CellularWindow.enabledKey) private var cellularWindowEnabled = false
+    @AppStorage(CellularWindow.shortcutNameKey) private var cellularShortcutName = ""
     @AppStorage("keepAliveLocation") private var keepAliveLocation = true
     @AppStorage(UserDefaults.Keys.targetDeviceIP) private var targetDeviceIP = DeviceConnectionContext.defaultTargetIPAddress
     @AppStorage("TunnelRemotePairingPort") private var remotePairingPortOverride = ""
@@ -144,6 +146,27 @@ struct SettingsView: View {
                             Text("Treats device as TXM-capable to bypass hardware checks.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
+                    }
+                }
+
+                Section {
+                    Toggle(isOn: $cellularWindowEnabled) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("JIT on Cellular")
+                            Text("For JIT requests from other apps without Wi-Fi: runs an Airplane Mode shortcut and connects in the seconds after Airplane Mode turns off.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    if cellularWindowEnabled {
+                        TextField(CellularWindow.defaultShortcutName, text: $cellularShortcutName)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+                } header: {
+                    Text("Cellular")
+                } footer: {
+                    if cellularWindowEnabled {
+                        Text("In the Shortcuts app, create a shortcut with this name that turns Airplane Mode on, waits 1 second and turns it off, and run it once to allow it. Keep LocalDevVPN connected.")
                     }
                 }
 

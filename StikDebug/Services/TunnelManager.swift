@@ -21,6 +21,17 @@ final class TunnelManager: ObservableObject {
 
     private init() {}
 
+    /// A cellular window installed the main tunnel (CellularWindow.swift).
+    func markConnectedByWindow() {
+        runOnMain {
+            self.lastError = nil
+            self.lastDiagnosis = nil
+            self.isConnected = true
+            LogManager.shared.addInfoLog("Tunnel connected (cellular window)")
+            self.mountDeveloperDiskImageIfNeeded()
+        }
+    }
+
     func markDisconnected() {
         runOnMain {
             self.setConnectionNotice(nil)
@@ -40,10 +51,11 @@ final class TunnelManager: ObservableObject {
         }
     }
 
-    func start(showErrorUI: Bool = true) {
+    /// `request`: the external JIT request this start is for; its cellular window tunnels are used.
+    func start(showErrorUI: Bool = true, request: String? = nil) {
         guard Thread.isMainThread else {
             DispatchQueue.main.async {
-                self.start(showErrorUI: showErrorUI)
+                self.start(showErrorUI: showErrorUI, request: request)
             }
             return
         }
@@ -68,7 +80,7 @@ final class TunnelManager: ObservableObject {
             let diagnosis: ConnectionDiagnosis?
             let notice: String?
             do {
-                try JITEnableContext.shared.startTunnel()
+                try JITEnableContext.withRequest(request) { try JITEnableContext.shared.startTunnel() }
                 result = .success(())
                 diagnosis = nil
                 let conditions = targetIP == DeviceConnectionContext.defaultTargetIPAddress ? ConnectionDiagnostics.networkConditions() : nil
@@ -190,8 +202,8 @@ final class TunnelManager: ObservableObject {
     }
 }
 
-func startTunnelInBackground(showErrorUI: Bool = true) {
-    TunnelManager.shared.start(showErrorUI: showErrorUI)
+func startTunnelInBackground(showErrorUI: Bool = true, request: String? = nil) {
+    TunnelManager.shared.start(showErrorUI: showErrorUI, request: request)
 }
 
 func markTunnelDisconnected() {

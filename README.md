@@ -73,6 +73,16 @@ StikDebug enables **JIT** for sideloaded apps on iOS 17.4+ without needing a com
 - Pairing file issues → Replace file with device unlocked & trusted.  
 - Still stuck? Join the [Discord](https://discord.gg/ZnNcrRT3M8) with logs/screenshots.
 
+### JIT on Cellular (Optional)
+
+Without Wi-Fi, the device refuses StikDebug's connection over the VPN while cellular is the active network. Right after Airplane Mode turns off, there are a few seconds in which it accepts it, and connections made then keep working. StikDebug can use that window for JIT requests that come from other apps:
+
+1. In the Shortcuts app, create a shortcut named **StikDebug Airplane Mode** with three actions: *Set Airplane Mode* to On, *Wait* 1 second, *Set Airplane Mode* to Off. Run it once and allow it.
+2. In StikDebug's Settings, turn on **JIT on Cellular** (you can enter another shortcut name there).
+3. Keep LocalDevVPN connected; it cannot start while Airplane Mode is on.
+
+When a request arrives on cellular only, StikDebug runs the shortcut, opens the connections the request needs in that window, and continues as usual. Steps are logged with the prefix `[cellular-window]`.
+
 <!-- 
 ## Screenshots
 
