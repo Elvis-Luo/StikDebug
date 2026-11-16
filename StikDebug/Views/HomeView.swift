@@ -392,7 +392,9 @@ struct HomeView: View {
             startTunnelInBackground(showErrorUI: false)
         }
 
-        DispatchQueue.global(qos: .background).async {
+        // .userInitiated: the user is waiting for this. At .background it waited behind other work (11 s behind the
+        // installed-app list being parsed on a device with 944 apps).
+        DispatchQueue.global(qos: .userInitiated).async {
             let keepAliveLease = DebugKeepAliveLease()
             defer { keepAliveLease.invalidate() }
 
